@@ -4,7 +4,7 @@
 # import the necessary packages
 import argparse
 import datetime
-import imutils
+#import imutils
 import time
 import cv2
 import sys
@@ -28,15 +28,19 @@ def diffImg(t0, t1, t2):
     return cv2.bitwise_and(d1, d2)
 
 
-def get_frame():
+def get_frame(bb=None):
     # resize the frame, convert it to grayscale, and blur it
     grabbed, frame = camera.read()
     if not grabbed:
-        return None
-    frame = imutils.resize(frame, width=500)
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    #gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    #return cv2.GaussianBlur(gray, (21, 21), 0)
+        return None, None
+    if bb:
+        x, y, w, h = bb
+        roi = frame[y:y + h, x:x + w]
+    else:
+        roi = frame
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+    return frame, gray
 
 
 def get_largest_contour(cnts):
@@ -65,7 +69,7 @@ def get_video(args):
         return cv2.VideoCapture(os.path.abspath(args.video))
 
 
-def draw(frame, rgb, bb, flow):
+def draw(frames, bb=None):
     # draw the text and timestamp on the frame
     #cv2.putText(
         #frame, "Edge Movement: {}".format(edge_movement), (10, 40),
@@ -73,22 +77,27 @@ def draw(frame, rgb, bb, flow):
     #cv2.putText(
         #frame, "Object Detected: {}".format(detected), (10, 20),
         #cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 2)
-    x, y, w, h = bb
-    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+    if not frames:
+        return
+    if bb:
+        x, y, w, h = bb
+        cv2.rectangle(frames[0], (x, y), (x + w, y + h), (0, 255, 0), 1)
     cv2.putText(
-        frame, datetime.datetime.now(
+        frames[0], datetime.datetime.now(
         ).strftime("%A %d %B %Y %I:%M:%S%p"),
-        (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
+        (10, frames[0].shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
 
-    # show the frame and record if the user presses a key
-    cv2.imshow('Feed', frame)
-    cv2.imshow('Motion', rgb)
-    cv2.imshow('Flow', flow)
+    offset = 0
+    for num, frame in enumerate(frames):
+        cv2.imshow('Frame {}'.format(num), frame)
+        cv2.moveWindow('Feed {}'.format(num), 0, offset)
+        offset += frame.shape[1]
+
     # required to display images
     cv2.waitKey(1)
 
 
-def draw_flow(frame, flow, step=16):
+def draw_flow(frame, flow, step=8):
     h, w = frame.shape[:2]
     y, x = np.mgrid[step / 2:h:step, step / 2:w:step].reshape(2, -1)
     fx, fy = flow[y, x].T
@@ -103,9 +112,9 @@ def draw_flow(frame, flow, step=16):
 
 
 def setup_windows():
-    cv2.namedWindow("Feed")
-    cv2.namedWindow("Motion")
-    cv2.namedWindow("Flow")
+    cv2.namedWindow("Feed", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Motion", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Flow", cv2.WINDOW_NORMAL)
     #cv2.namedWindow("Security Feed")
     #cv2.namedWindow("Thresh")
     #cv2.namedWindow("Frame Delta")
@@ -121,59 +130,47 @@ def setup_windows():
 def detect_trains(cap, args):
 
     dead_time = 60
-    last_time = time.time() - 60
-    threshold = 2
+    last_event = time.time() - 60
+    diff_thresh = 10
 
-    setup_windows()
+    #setup_windows()
 
-    magnatude = deque(maxlen=10)
+    #magnatude = deque(maxlen=10)
 
-    bb = 520, 290, 200, 30
-    x, y, w, h = bb
+    bb = 520, 250, 200, 70
 
-    ret, frame1 = cap.read()
-    roi = frame1[y:y + h, x:x + w]
-    prvs = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    hsv = np.zeros_like(roi)
-    hsv[..., 1] = 255
+    _, t_minus = get_frame(bb)
+    _, t = get_frame(bb)
+    _, t_plus = get_frame(bb)
 
+    d = deque(maxlen=6)
     while True:
-        ret, frame2 = cap.read()
-        if not ret:
+        t_minus = t
+        t = t_plus
+        frame, t_plus = get_frame(bb)
+        if frame is None:
             break
-        roi = frame2[y:y + h, x:x + w]
-        next_ = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-        flow = cv2.calcOpticalFlowFarneback(
-            prvs, next_, 0.5, 1, 5, 15, 3, 5, 1)
+        diff = diffImg(t_minus, t, t_plus)
+        thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
 
-        #flow = cv2.calcOpticalFlowFarneback(
-            #prvs,
-            #next_,
-            #None,
-            #0.5, 3, 15, 3, 5, 1.2, 0)
-
-        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
-        mag[np.abs(mag) < threshold] = 0
-        mag_sum = mag.sum()
-        if len(magnatude) == magnatude.maxlen and time.time() - last_time > dead_time:
-            if mag_sum > np.mean(magnatude) + 100 * np.std(magnatude):
-                ang_mean = np.average(ang, weights=mag)
-                direction = 'west' if (
-                    ang_mean < 90 or ang_mean > 270) else 'east'
-                print mag_sum, ang_mean, direction, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p")
-                last_time = time.time()
-        magnatude.append(mag_sum)
-        #hsv[..., 0] = ang * 180 / np.pi / 2
-        hsv[..., 0] = ang
-        #print hsv[..., ]
-        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-        prvs = next_
+        if time.time() - last_event > dead_time:
+            if len(d) < d.maxlen:
+                l, r = np.hsplit(thresh, 2)
+                pdiff = np.count_nonzero(l) - np.count_nonzero(r)
+                if abs(pdiff) > diff_thresh:
+                    d.append(pdiff)
+                else:
+                    d.clear()
+            else:
+                last_event = time.time()
+                direction = 'west' if sum(d) > 0 else 'east'
+                print sum(d), d, direction
+                d.clear()
 
         if not args.console:
-            draw(frame2, rgb, bb, draw_flow(roi, flow))
+            draw([frame, diff, thresh], bb)
 
         if args.slow:
             time.sleep(0.25)
@@ -197,4 +194,4 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     camera = get_video(args)
-    detect_trains(camera, args)
+    result = detect_trains(camera, args)
