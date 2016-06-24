@@ -34,8 +34,9 @@ def get_frame():
     if not grabbed:
         return None
     frame = imutils.resize(frame, width=500)
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return cv2.GaussianBlur(gray, (21, 21), 0)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    #return cv2.GaussianBlur(gray, (21, 21), 0)
 
 
 def get_largest_contour(cnts):
@@ -64,103 +65,115 @@ def get_video(args):
         return cv2.VideoCapture(os.path.abspath(args.video))
 
 
-def draw(frame, thresh, frameDelta, edge_movement, detected):
+def draw(frame, rgb, bb, flow):
     # draw the text and timestamp on the frame
-    cv2.putText(
-        frame, "Edge Movement: {}".format(edge_movement), (10, 40),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 2)
-    cv2.putText(
-        frame, "Object Detected: {}".format(detected), (10, 20),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 2)
+    #cv2.putText(
+        #frame, "Edge Movement: {}".format(edge_movement), (10, 40),
+        #cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 2)
+    #cv2.putText(
+        #frame, "Object Detected: {}".format(detected), (10, 20),
+        #cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 2)
+    x, y, w, h = bb
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
     cv2.putText(
         frame, datetime.datetime.now(
         ).strftime("%A %d %B %Y %I:%M:%S%p"),
         (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
 
     # show the frame and record if the user presses a key
-    cv2.imshow("Security Feed", frame)
-    cv2.imshow("Thresh", thresh)
-    cv2.imshow("Frame Delta", frameDelta)
+    cv2.imshow('Feed', frame)
+    cv2.imshow('Motion', rgb)
+    cv2.imshow('Flow', flow)
     # required to display images
     cv2.waitKey(1)
 
 
+def draw_flow(frame, flow, step=16):
+    h, w = frame.shape[:2]
+    y, x = np.mgrid[step / 2:h:step, step / 2:w:step].reshape(2, -1)
+    fx, fy = flow[y, x].T
+    lines = np.vstack([x, y, x + fx, y + fy]).reshape(-1, 2, 2)
+    lines = np.int32(lines)
+
+    vis = frame.copy()
+    for (x1, y1), (x2, y2) in lines:
+        cv2.line(vis, (x1, y1), (x2, y2), (0, 255, 0), 1)
+        cv2.circle(vis, (x1, y1), 1, (0, 255, 0), -1)
+    return vis
+
+
 def setup_windows():
-    cv2.namedWindow("Security Feed")
-    cv2.namedWindow("Thresh")
-    cv2.namedWindow("Frame Delta")
+    cv2.namedWindow("Feed")
+    cv2.namedWindow("Motion")
+    cv2.namedWindow("Flow")
+    #cv2.namedWindow("Security Feed")
+    #cv2.namedWindow("Thresh")
+    #cv2.namedWindow("Frame Delta")
 
-    cv2.moveWindow("Security Feed", 0, 0)
-    cv2.moveWindow("Thresh", 0, 500)
-    cv2.moveWindow("Frame Delta", 0, 1000)
+    cv2.moveWindow("Feed", 0, 0)
+    cv2.moveWindow("Motion", 0, 500)
+    cv2.moveWindow("Flow", 0, 600)
+    #cv2.moveWindow("Security Feed", 0, 0)
+    #cv2.moveWindow("Thresh", 0, 500)
+    #cv2.moveWindow("Frame Delta", 0, 1000)
 
 
-def detect_trains(camera, args):
+def detect_trains(cap, args):
 
-    # initialize the first frame in the video stream
-    detected = False
-    moved_out_of_frame = False
-    bb_x_ends = deque(maxlen=2)
-    movement = deque(maxlen=10)
-    edge_movement = 0
-
-    t2 = get_frame()
-    t1 = get_frame()
-    t0 = get_frame()
+    dead_time = 60
+    last_time = time.time() - 60
+    threshold = 2
 
     setup_windows()
 
-    # loop over the frames of the video
+    magnatude = deque(maxlen=10)
+
+    bb = 520, 290, 200, 30
+    x, y, w, h = bb
+
+    ret, frame1 = cap.read()
+    roi = frame1[y:y + h, x:x + w]
+    prvs = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    hsv = np.zeros_like(roi)
+    hsv[..., 1] = 255
+
     while True:
-
-        t2 = t1
-        t1 = t0
-        t0 = get_frame()
-
-        if t0 is None:
+        ret, frame2 = cap.read()
+        if not ret:
             break
+        roi = frame2[y:y + h, x:x + w]
+        next_ = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-        frame = t0.copy()
+        flow = cv2.calcOpticalFlowFarneback(
+            prvs, next_, 0.5, 1, 5, 15, 3, 5, 1)
 
-        # compute the absolute difference between the current frame and
-        # first frame
-        frameDelta = diffImg(t0, t1, t2)
-        thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
+        #flow = cv2.calcOpticalFlowFarneback(
+            #prvs,
+            #next_,
+            #None,
+            #0.5, 3, 15, 3, 5, 1.2, 0)
 
-        # dilate the thresholded image to fill in holes, then find contours
-        # on thresholded image
-        thresh = cv2.dilate(thresh, None, iterations=2)
-        (cnts, _) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
-                                     cv2.CHAIN_APPROX_SIMPLE)
-        #if args.bounding_box:
-            #bx, by, bw, bh =
-            #cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 1)
+        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
+        mag[np.abs(mag) < threshold] = 0
+        mag_sum = mag.sum()
+        if len(magnatude) == magnatude.maxlen and time.time() - last_time > dead_time:
+            if mag_sum > np.mean(magnatude) + 100 * np.std(magnatude):
+                ang_mean = np.average(ang, weights=mag)
+                direction = 'west' if (
+                    ang_mean < 90 or ang_mean > 270) else 'east'
+                print mag_sum, ang_mean, direction, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p")
+                last_time = time.time()
+        magnatude.append(mag_sum)
+        #hsv[..., 0] = ang * 180 / np.pi / 2
+        hsv[..., 0] = ang
+        #print hsv[..., ]
+        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
-        # object has left the frame
-        if moved_out_of_frame and len(movement) == movement.maxlen:
-            print 'Detected Train'
-            print np.average(movement)
-            movement.clear()
-
-        contour = get_largest_contour(cnts)
-        if contour:
-            (x, y, w, h) = contour
-            bb_x_ends.append((x, x + w))
-            edge_movement = (bb_x_ends[-1][0] - bb_x_ends[0][0] +
-                             bb_x_ends[-1][1] - bb_x_ends[0][1])
-            movement.appendleft(edge_movement)
-            # print edge_movement, np.average(movement), max(movement), min(movement)
-            # compute the bounding box for the contour, draw it on the frame,
-            # and update the text
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            moved_out_of_frame = False
-            detected = True
-        else:
-            moved_out_of_frame = detected
-            detected = False
+        prvs = next_
 
         if not args.console:
-            draw(frame, thresh, frameDelta, edge_movement, detected)
+            draw(frame2, rgb, bb, draw_flow(roi, flow))
 
         if args.slow:
             time.sleep(0.25)
