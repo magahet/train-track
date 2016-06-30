@@ -1,0 +1,27 @@
+#!/usr/bin/env python
+
+import traintrack
+import argparse
+
+
+def run():
+    parser = argparse.ArgumentParser(description="Does a thing to some stuff.")
+    parser.add_argument("-l", "--logpath", help="path to train-track log", default='/tmp/train-track.log')
+    parser.add_argument("-v", "--verbose", help="increase output verbosity", action="store_true")
+    args = parser.parse_args()
+
+    predictor_east = traintrack.TimePredictor()
+    predictor_east.read_log(args.logpath, 'east')
+    print 'Eastbound Stats'
+    print predictor_east.stats
+    print predictor_east.predict()
+
+    predictor_west = traintrack.TimePredictor()
+    predictor_west.read_log(args.logpath, 'west')
+    print 'Eastbound Stats'
+    print predictor_west.stats
+    print predictor_east.predict()
+
+
+if __name__ == '__main__':
+    run()

@@ -34,8 +34,14 @@ class Camera(object):
         else:
             roi = frame
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
         return frame, gray
+
+    def save_last_frame(self, filepath):
+        if len(self.frames) == 0:
+            return False
+        cv2.imwrite(filepath, self.frames[-1])
+        return True
 
     def get_delta(self):
         if len(self.frames) < 3:

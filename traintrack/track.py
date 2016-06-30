@@ -1,22 +1,20 @@
-#!/usr/bin/env python
-
-
-import argparse
 import datetime
 import time
 import numpy as np
 from collections import deque
-#import predict
 import camera
 import cv2
 import logging
 import os
 
 
+logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+
 class TrainTracker(object):
     '''Tracks the passing of trains and predicts next arrival.'''
 
-    def __init__(self, source, video=False, slow=False, bb_str=None):
+    def __init__(self, source, video=False, slow=False, bb_str=None, logpath='/tmp/train-track.log', imgdir='/tmp/train-track/'):
         self.diff_thresh = 10
         self.video = video
         self.slow = slow
@@ -26,9 +24,11 @@ class TrainTracker(object):
             if len(bb) == 4:
                 self.bb = bb
         self.cam = camera.Camera(source, self.bb)
+        self.logpath = logpath
+        self.imgdir = imgdir
 
     def __del__(self):
-        logger.info('Stopping Tracker')
+        logging.info('Stopping Tracker')
 
     @staticmethod
     def draw(frames, bb=None):
@@ -57,7 +57,7 @@ class TrainTracker(object):
             l, r = np.hsplit(array, 2)
             return np.count_nonzero(l) - np.count_nonzero(r)
 
-        logger.info('Starting Tracker')
+        logging.info('Starting Tracker')
         section_diffs = deque(maxlen=6)
         #predictors = {
             #'east': predict.TimePredictor(5),
@@ -75,18 +75,24 @@ class TrainTracker(object):
             else:
                 cooldown = max(cooldown - 1, 0)
                 section_diffs.clear()
-            if len(section_diffs) == section_diffs.maxlen and not cooldown:
+            event_detected = (
+                len(section_diffs) == section_diffs.maxlen and
+                abs(np.average(section_diffs)) > self.diff_thresh * 5 and
+                not cooldown
+            )
+            if event_detected:
                 cooldown = 10
                 direction = 'west' if sum(section_diffs) > 0 else 'east'
                 now = datetime.datetime.now()
                 last = last_dict.get(direction)
+                self.log(now, direction)
                 if last is not None:
                     interval = now - last
-                    logger.info(
+                    logging.info(
                         "Section diff sum: [%d], Direction: [%s], Interval: [%d]",
                         sum(section_diffs), direction, interval.total_seconds())
                 else:
-                    logger.info(
+                    logging.info(
                         "Section diff sum: [%d], Direction: [%s], Interval: []",
                         sum(section_diffs), direction)
                 #predictor = predictors.get(direction)
@@ -101,37 +107,10 @@ class TrainTracker(object):
             if self.slow:
                 time.sleep(0.25)
 
-
-if __name__ == '__main__':
-    #signal.signal(signal.SIGINT, signal_handler)
-    # construct the argument parser and parse the arguments
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-i", "--input", dest='input_', help="path to the video source or device number", default='0')
-    ap.add_argument("-l", "--logpath", help="path to log file", default='/var/log/train-track/event.log')
-    ap.add_argument(
-        "-v", "--video", default=False, help="Show capture and motion images", action='store_true')
-    ap.add_argument(
-        "-s", "--slow", default=False, help="run in slow mode", action='store_true')
-    ap.add_argument("-b", "--bb", help="Optional bounding box")
-    args = ap.parse_args()
-
-    tracker = TrainTracker(args.input_, args.video, args.slow, args.bb)
-    #self.bb = 520, 250, 200, 70
-    logdir = os.path.dirname(args.logpath)
-    if not os.path.exists(logdir):
-        os.makedirs(logdir)
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    fileHandler = logging.FileHandler(args.logpath)
-    fileHandler.setFormatter(formatter)
-    consoleHandler = logging.StreamHandler()
-    consoleHandler.setFormatter(formatter)
-    logger.addHandler(fileHandler)
-    logger.addHandler(consoleHandler)
-
-    try:
-        tracker.run()
-    except KeyboardInterrupt:
-        print 'Stopping'
-        del tracker
+    def log(self, timestamp, direction):
+        with open(self.logpath, 'a') as log:
+            log.write('{:%Y-%m-%d %H:%M:%S},{}\n'.format(timestamp, direction))
+        if not os.path.isdir(self.imgdir):
+            os.makedirs(self.imgdir)
+        filepath = os.path.join(self.imgdir, '{:%Y-%m-%d %H:%M:%S}.jpg'.format(timestamp))
+        self.cam.save_last_frame(filepath)
